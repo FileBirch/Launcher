@@ -14,9 +14,9 @@ export const brand = {
   feedback: 'NaiomiSummersDevelopment@gmail.com',
   stage: 'Early Development',
   warning: 'Errors or missing features are possible in this early release.',
-  termsVersion: 'draft-1',
-  approvedTermsVersion: '',
-  approvedTermsSHA256: '',
+  termsVersion: '1.0',
+  approvedTermsVersion: '1.0',
+  approvedTermsSHA256: 'acef3558467238e853de5e22db8475e9ab3ce499965cf9d18878591e70cdbfa7',
   approvedDisclaimers: '',
   // The owner's selected names. This records a product decision, not a legal opinion.
   approvedPublicNames: { suite: 'FileBirch', spreadsheets: 'Tables', documents: 'Papers', presentations: 'Present' },

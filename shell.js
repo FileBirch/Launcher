@@ -19,10 +19,11 @@ for(const [k,v] of Object.entries(brand.colors)) document.documentElement.style.
 document.title=brand.pageTitle(route);
 document.querySelector('meta[name=description]').content=brand.description;
 const favicon=document.createElement('link');favicon.rel='icon';favicon.href=new URL(brand.mark,base);document.head.append(favicon);
-let terms='',draft=true,accepted=false,stopArt;
+let terms='',draft=true,accepted=false,stopArt,termsHash='';
+const receipt=()=>JSON.stringify({version:brand.termsVersion,hash:termsHash});
 export const devNotice=()=>'<aside class="strip">'+icon('info')+'<span><strong>'+esc(brand.stage)+'</strong> '+esc(brand.warning)+'</span></aside>';
 const art=()=>'<div class="artcard"><canvas aria-hidden="true"></canvas><span class="artlabel">'+esc(brand.descriptor)+'</span><div><div class="arttitle">'+esc(brand.suite)+'</div><div class="artcaption"><span>WORKSPACE EDITION</span><span>V. '+esc(brand.version)+'</span></div></div></div>';
-const termsHTML=()=>terms.trim().split(/\r?\n\s*\r?\n/).map(s=>s.startsWith('## ')?'<h4>'+esc(s.slice(3))+'</h4>':s.startsWith('# ')?'<h3>'+esc(s.slice(2))+'</h3>':'<p>'+esc(s)+'</p>').join('')+(brand.approvedDisclaimers?'<p>'+esc(brand.approvedDisclaimers)+'</p>':'');
+const termsHTML=()=>terms.trim().split(/\r?\n\s*\r?\n/).map(s=>s.startsWith('## ')?'<h4>'+esc(s.slice(3))+'</h4>':s.startsWith('# ')?'<h3>'+esc(s.slice(2))+'</h3>':'<p>'+esc(s)+'</p>').join('')+'<p>Acceptance applies to this official build or service. It does not limit rights granted by the MIT source-code license or any separate component license.</p>'+(brand.approvedDisclaimers?'<p>'+esc(brand.approvedDisclaimers)+'</p>':'');
 function frame(body){
   stopArt?.();
   const mail=(sub)=>'mailto:'+brand.feedback+'?subject='+encodeURIComponent(brand.suite+' '+sub);
@@ -31,8 +32,9 @@ function frame(body){
   const canvas=root.querySelector('canvas');if(canvas)import(new URL(brand.art,base)).then(m=>{if(canvas.isConnected)stopArt=m.illustrate(canvas)});
 }
 function gate(){
-  frame('<div class="intro"><div class="eyebrow">Workspace access</div><h1>Welcome to '+esc(brand.suite)+'.</h1><p class="lead">Review the agreement to enter your local workspace.</p></div><div class="gategrid">'+art()+'<section class="panel"><div class="panelhead"><h2>Terms of Service</h2><span class="draft">'+(draft?'Legal review · Draft':esc(brand.termsVersion))+'</span></div><div class="scrollterms" tabindex="0" role="region" aria-label="Terms of Service text">'+termsHTML()+'</div><button id="agree" class="primary agree">'+icon('check')+'I agree to the Terms of Service</button><p class="hint" id="gatehint" role="status">Acceptance is saved on this device.</p></section></div>'+devNotice());
-  root.querySelector('#agree').onclick=()=>{try{localStorage.setItem(key,brand.termsVersion);accepted=true;enter()}catch{root.querySelector('#gatehint').textContent='Browser storage is unavailable. Allow local storage to remember your agreement.'}};
+  frame('<div class="intro"><div class="eyebrow">Workspace access</div><h1>Welcome to '+esc(brand.suite)+'.</h1><p class="lead">Review the agreement to enter your local workspace.</p></div><div class="gategrid">'+art()+'<section class="panel"><div class="panelhead"><h2>Terms of Service</h2><span class="draft">'+(draft?'Legal review · Draft':esc(brand.termsVersion))+'</span></div><div class="scrollterms" tabindex="0" role="region" aria-label="Terms of Service text">'+termsHTML()+'</div><button id="agree" class="primary agree">'+icon('check')+'I agree to the Terms of Service</button><button id="decline" class="secondary">Decline</button><p class="hint" id="gatehint" role="status">Acceptance is saved on this device.</p></section></div>'+devNotice());
+  root.querySelector('#decline').onclick=()=>{frame('<div class="intro"><h1>Terms declined</h1><p>Your files and saved data have not been changed. No acceptance was saved.</p><button id="reviewterms" class="secondary">Review terms again</button></div>');root.querySelector('#reviewterms').onclick=gate;};
+  root.querySelector('#agree').onclick=()=>{try{localStorage.setItem(key,receipt());accepted=true;enter()}catch{root.querySelector('#gatehint').textContent='Browser storage is unavailable. Allow local storage to remember your agreement.'}};
 }
 function launcher(){
   const cards=Object.entries(brand.apps).map(([k,a])=>'<article class="appcard"><div class="cardtop"><span class="appicon '+k+'">'+icon(k)+'</span><span class="pill '+(a.available?'avail':'')+'">'+(a.available?'Available':'Planned')+'</span></div><h3>'+esc(a.name)+'</h3><p>'+esc(a.subtitle)+'</p><span class="format">'+esc(a.formats)+'</span>'+(a.available?'<a class="appopen" href="'+routeURL(k+'/')+'">Open '+esc(a.name)+'</a>':'')+'</article>').join('');
@@ -64,11 +66,12 @@ async function start(){
   const res=await fetch(new URL('tos.md',base),{cache:'no-store'});if(!res.ok)throw Error('The local agreement could not be loaded.');
   terms=await res.text();if(!terms.trim())throw Error('The agreement file is empty.');
   const release=await releaseState(brand,terms);
+  termsHash=release.digest;
   draft=!release.termsApproved;
   if(!local&&!pagesTest&&!release.ready){frame('<div class="intro"><div class="eyebrow">Release on hold</div><h1>Local preview only.</h1><p class="lead">Public access will open after release review.</p></div>');return}
-  try{accepted=localStorage.getItem(key)===brand.termsVersion}catch{}
+  try{accepted=localStorage.getItem(key)===receipt()}catch{}
   await enter();
 }
 addEventListener('pageshow',e=>{if(e.persisted)location.reload()});
-addEventListener('storage',e=>{if(e.key===key||e.key===null){if(localStorage.getItem(key)!==brand.termsVersion)location.reload()}});
+addEventListener('storage',e=>{if(e.key===key||e.key===null){if(localStorage.getItem(key)!==receipt())location.reload()}});
 start().catch(e=>{root.textContent='Workspace unavailable. '+e.message});
