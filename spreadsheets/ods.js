@@ -20,12 +20,20 @@ function paragraph(n,warn){
     }
   }walk(n);return s
 }
+// Translate both endpoints together so the second inherits the first endpoint's sheet.
+const sheetToken = String.raw`(?:'(?:[^']|'')*'|[\p{L}_][\p{L}\p{N}_.]*)`;
+const cellToken = String.raw`\$?[A-Z]{1,3}\$?[1-9]\d*`;
+const odsRef = new RegExp(String.raw`\[(?:\$?(${sheetToken}))?\.(${cellToken})(?::(?:\$?(${sheetToken}))?\.(${cellToken}))?\]`, 'giu');
+const excelRef = new RegExp(String.raw`(?<![\w.$])(?:(${sheetToken})!)?(${cellToken})(?::(?:(${sheetToken})!)?(${cellToken}))?(?![\w.(])`, 'giu');
+function separators(s,from,to){
+  return s.replace(/'(?:[^']|'')*'|[,;]/g,token=>token===from?to:token);
+}
 function formulaIn(f){
   if(!/^(of|oooc):=/.test(f))return f;
-  return f.replace(/^(of|oooc):=/,'').split(/("(?:[^"]|"")*")/g).map((part,i)=>i%2?part:part.replace(/\[\.(\$?[A-Z]+\$?\d+)(?::\.(\$?[A-Z]+\$?\d+))?\]/gi,(_,start,end)=>start+(end?':'+end:'')).replaceAll(';',',')).join('');
+  return f.replace(/^(of|oooc):=/,'').split(/("(?:[^"]|"")*")/g).map((part,i)=>i%2?part:separators(part.replace(odsRef,(_,sheet,start,lastSheet,end)=>(sheet?sheet+'!':'')+start+(end?':'+(lastSheet && lastSheet!==sheet?lastSheet+'!':'')+end:'')),';',',')).join('');
 }
 function formulaOut(f){
-  return 'of:='+f.split(/("(?:[^"]|"")*")/g).map((part,i)=>i%2?part:part.replace(/(?<![\w.$])(\$?[A-Z]+\$?\d+)(?::(\$?[A-Z]+\$?\d+))?(?![\w.])/gi,(_,start,end)=>'[.'+start+(end?':.'+end:'')+']').replaceAll(',',';')).join('');
+  return 'of:='+f.split(/("(?:[^"]|"")*")/g).map((part,i)=>i%2?part:separators(part.replace(excelRef,(_,sheet,start,lastSheet,end)=>'['+(sheet?'$'+sheet:'')+'.'+start+(end?':'+(lastSheet||sheet?'$'+(lastSheet||sheet):'')+'.'+end:'')+']'),',',';')).join('');
 }
 function collectStyles(docs,warn){
   const data=new Map(),styles=new Map(),live=new Set(),cache=new Map();

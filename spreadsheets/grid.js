@@ -50,6 +50,12 @@ export class Grid {
       for(let c=fc;c<lc;c++){
         const ref=address(r,c),cell=this.cb.cell(ref),value=this.cb.value(ref),style=cell?.style||{},inRange=r>=b.top&&r<=b.bottom&&c>=b.left&&c<=b.right;
         const el=tile('gridcell'+(typeof value==='number'?' num':'')+(inRange?' sel':'')+(r===this.r&&c===this.c?' active':'')+(cell?.f!==undefined&&String(value).startsWith('#')?' error':''),display(value,style.fmt),headWidth+c*colWidth,headHeight+r*rowHeight,colWidth,rowHeight,'gridcell');
+        const state=this.cb.status(ref);
+        if(state){
+          el.textContent=state==='No saved result'?state:el.textContent+' · saved';
+          el.title=state+' · '+(cell?.group?.ref||ref);
+        }
+        if(cell?.group)el.setAttribute('aria-readonly','true');
         el.dataset.address=ref;el.dataset.row=r;el.dataset.col=c;el.id='cell-'+ref;el.setAttribute('aria-selected',String(inRange));el.setAttribute('aria-colindex',c+2);el.setAttribute('aria-label',ref+' '+el.textContent);
         if(style.bold)el.style.fontWeight='700';if(style.italic)el.style.fontStyle='italic';if(style.align)el.style.textAlign=style.align;if(style.fill)el.style.backgroundColor=style.fill;if(style.color)el.style.color=style.color;
         row.append(el)
@@ -60,6 +66,8 @@ export class Grid {
   }
   begin(initial){
     if(this.edit)return;this.select(this.r,this.c);const ref=address(this.r,this.c),initialText=inputText(this.cb.cell(ref)),field=document.createElement('input');
+    const group=this.cb.cell(ref)?.group;
+    if(group){this.cb.message('Protected '+group.label+' at '+group.ref+'.');return}
     field.className='cellinput';field.setAttribute('aria-label','Edit '+ref);field.autocomplete='off';field.spellcheck=false;field.value=initial??initialText;
     Object.assign(field.style,{top:(headHeight+this.r*rowHeight)+'px',left:(headWidth+this.c*colWidth)+'px',width:colWidth+'px',height:rowHeight+'px'});
     this.edit={field,ref,initialText};this.plane.append(field);field.focus();field.setSelectionRange(field.value.length,field.value.length);this.cb.drafting(field.value,field.value!==initialText);

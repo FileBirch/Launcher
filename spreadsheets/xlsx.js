@@ -1,5 +1,8 @@
 import {XML, MS, REL, PKG, MIME, parse, xml, children, first, all, attr, address, coords, rowsOf, stylesOf, isSheetNameExcel, errorValue, bookReader} from './xml.js';
 import {makeZip} from './package.js';
+import {translateShared,formulaGroup,installGroups} from './formula-groups.js';
+import {patchXlsx} from './xlsx-writeback.js';
+import {makeCalculator} from './calc.js';
 const GLOSS = 'Package metadata, custom themes, view and print settings are rebuilt on export. Only the documented cell formats are preserved.';
 const STYLELOSS = 'Some fonts, borders, number formats or other advanced cell styles are simplified.';
 // Inspect package declarations as well as filenames. Producers may use arbitrary part names.
@@ -85,7 +88,8 @@ export async function readXlsx(zip){
   if(!wbRels)throw Error('Missing internal worksheet relationships.');
   const known=new Set(['[Content_Types].xml',wbName,...rels.keys()]);
   const lookup=type=>[...wbRels.values()].find(r=>r.type===type&&!r.external);
-  let styles=[],strings=[];
+  let styles=[],strings=[], special=false;
+  const originals=[];
   for(const type of ['styles','sharedStrings']){
     const rel=lookup(type);if(!rel)continue;
     const name=partName(wbName,rel.target);known.add(name);const root=await read(name);
@@ -108,6 +112,7 @@ export async function readXlsx(zip){
       if(labels[k.localName])warn(labels[k.localName]);else if(!['dimension','sheetViews','sheetFormatPr','sheetData','pageMargins','sheetPr','printOptions','pageSetup','headerFooter'].includes(k.localName))warn('Other worksheet features ('+k.localName+') are omitted.');
     }
     if(all(ws,'pane').length)warn('Frozen and split panes are omitted.');
+    const groups=[], masters=new Map(), shared=[];
     let rowIndex=0;
     for(const row of children(first(ws,'sheetData'),'row')){
       inspectChildren(row,['c'],warn,'Additional row extension data is omitted.');
@@ -121,22 +126,41 @@ export async function readXlsx(zip){
         const f=first(c,'f'),v=first(c,'v'), type=attr(c,'t')||'n', style=styles[Number(attr(c,'s')||0)];
         const cell={v:''};
         if(f){
-          if(attr(f,'t') && attr(f,'t')!=='normal')throw Error('Shared, array, or data-table formulas are unsupported. The original workbook was left intact.');
-          if(!f.textContent)throw Error('A formula is missing its expression.');
-          cell.f=f.textContent;
-        }else if(type==='s'){
+          const kind=attr(f,'t')||'normal';
+          if(kind==='shared'){
+            const si=attr(f,'si');
+            shared.push({addr,si});
+            if(f.textContent)masters.set(si,{addr,expression:f.textContent});
+            cell.shared=si;
+          }else if(kind==='array'||kind==='dataTable')groups.push(formulaGroup(f,addr));
+          else if(kind!=='normal')throw Error('Unknown formula type '+kind+' at '+name+'!'+addr+'.');
+          else if(!f.textContent)throw Error('Missing formula at '+name+'!'+addr+'.');
+          if(f.textContent)cell.f=f.textContent;
+        }
+        cell.saved=!!v && (v.textContent!=='' || type==='str') || type==='inlineStr';
+        if(!cell.saved)cell.v='';
+        else if(type==='s'){
           const index=Number(v?.textContent);if(!v||!Number.isInteger(index)||index<0||index>=strings.length)throw Error('Invalid shared string index.');
           cell.v=strings[index];
         }else if(type==='inlineStr')cell.v=richText(first(c,'is'),warn);
         else if(type==='b'){if(!v||!['1','0','true','false'].includes(v.textContent))throw Error('Invalid Boolean cell.');cell.v=['1','true'].includes(v.textContent)}
         else if(type==='str')cell.v=stringValue(v);
-        else if(type==='n'&&v){cell.v=Number(v.textContent);if(!Number.isFinite(cell.v))throw Error('Invalid numeric value in workbook.')}
+        else if(type==='e'){cell.v=v?.textContent||'';cell.error=true}
+        else if(type==='n'&&cell.saved){cell.v=Number(v.textContent);if(!Number.isFinite(cell.v))throw Error('Invalid numeric value in workbook.')}
         else if(type!=='n'){cell.v=v?.textContent||'';warn('Error, date or unrecognized cell types are imported as text.')}
         if(style&&Object.keys(style).length)cell.style={...style};
         if(attr(c,'s')&&!style)warn(STYLELOSS);
-        if(cell.v!==''||cell.f||cell.style||type==='inlineStr'||type==='s')ctx.put(sheet,addr,cell);
+        if(cell.v!==''||f||cell.style||cell.saved)ctx.put(sheet,addr,cell);
       }
     }
+    for(const {addr,si} of shared){
+      const master=masters.get(si);
+      if(master)sheet.cells[addr].f=translateShared(master.expression,master.addr,addr);
+      else groups.push({...formulaGroup(null,addr),type:'shared',label:'shared formula without master'});
+    }
+    installGroups(ctx,sheet,groups);
+    if(groups.length || shared.length)special=true;
+    originals.push({file,id,name});
   }
   for(const file of zip.names){
     if(known.has(file)||file.endsWith('/'))continue;
@@ -148,7 +172,19 @@ export async function readXlsx(zip){
     else if(/\/tables\//i.test(file))warn('Structured tables are omitted.');
     else if(!/^(docProps\/|xl\/theme\/|xl\/calcChain\.xml$)/.test(file))warn('Additional package parts or custom data are omitted.');
   }
-  warn(GLOSS);return ctx.result();
+  warn(GLOSS);
+  const book=ctx.result();
+  if(special){
+    book.xlsx={zip,wbName,relsName:dir+'_rels/'+wbName.slice(dir.length)+'.rels',
+      styleFile:lookup('styles') ? partName(wbName,lookup('styles').target) : null, originals};
+    for(const [i,s] of book.sheets.entries()) originals[i].cells={...s.cells};
+  }else{
+    for(const s of book.sheets)for(const cell of Object.values(s.cells)){
+      if(cell.f)cell.v='';
+      delete cell.saved;
+    }
+  }
+  return book;
 }
 function xtext(value){return xml(String(value).replace(/_x[\da-f]{4}_/gi,s=>'_x005F_'+s.slice(1)))}
 function styleXML(styles){
@@ -163,6 +199,7 @@ function styleXML(styles){
   return XML+'<styleSheet xmlns="'+MS+'"><numFmts count="1"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00"/></numFmts><fonts count="'+fonts.length+'">'+fonts.join('')+'</fonts><fills count="'+fills.length+'">'+fills.join('')+'</fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="'+xfs.length+'">'+xfs.join('')+'</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
 }
 export function writeXlsx(book,getValue){
+  if(book.xlsx)return patchXlsx(book,getValue?.isError ? getValue : makeCalculator(book),styleXML);
   const {styles,id}=stylesOf(book),parts=[], sheets=[],relationships=[],overrides=[];
   const relation=(id,type,target)=>'<Relationship Id="rId'+id+'" Type="'+REL+'/'+type+'" Target="'+target+'"/>';
   for(const [index,sheet] of book.sheets.entries()){

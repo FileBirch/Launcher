@@ -1,4 +1,6 @@
 // A closed formula language. Cell formula text is never executed as JavaScript.
+import {address as a1, coords} from './xml.js';
+class Unavailable extends Error {}
 const MAX_TOKENS = 384;
 const MAX_DEPTH = 64;
 const MAX_RANGE = 20000;
@@ -35,7 +37,7 @@ function columnName(col) {
 
 function tokenize(formula) {
   if (typeof formula !== "string" || formula.length > 4096) fail("#LIMIT!");
-  const pattern = /\s+|"(?:[^"]|"")*"|(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?|[A-Za-z_$][A-Za-z0-9_$]*|<>|<=|>=|[()+*/^,:=<>-]/gy;
+  const pattern = /\s+|#(?:REF!|DIV\/0!|VALUE!|NAME\?|NUM!|N\/A|NULL!)|'(?:[^']|'')*'|"(?:[^"]|"")*"|(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?|[\p{L}_$][\p{L}\p{N}_.$]*|<>|<=|>=|[!()+*/^,:=<>-]/guy;
   const tokens = [];
   let pos = 0;
   while (pos < formula.length) {
@@ -70,13 +72,18 @@ function parse(formula) {
       expect(")");
       return node;
     }
-    const token = tokens[pos++];
+    let token = tokens[pos++], sheetName;
+    if (take("!")) {
+      sheetName = token.startsWith("'") ? token.slice(1,-1).replaceAll("''","'") : token;
+      token = tokens[pos++];
+    }
     if (!token) fail("#VALUE!");
     if (token === "-" || token === "+") {
       const arg = primary(depth + 1);
       if (arg.op === "range") fail("#VALUE!");
       return { op: "sign", sign: token, arg };
     }
+    if (token.startsWith('#')) return {op:'error',value:token};
     if (NUMBER.test(token)) {
       const value = Number(token);
       if (!Number.isFinite(value)) fail("#NUM!");
@@ -99,11 +106,16 @@ function parse(formula) {
     if (name === "TRUE" || name === "FALSE") return { op: "value", value: name === "TRUE" };
     const ref = coordinates(name);
     if (!ref) fail("#NAME?");
-    if (!take(":")) return { op: "ref", address: ref.address };
+    if (!take(":")) return { op: "ref", sheetName, address: ref.address };
+    if (tokens[pos+1]==='!') {
+      const endSheet=tokens[pos].replace(/^'|'$/g,'').replaceAll("''","'");
+      if (endSheet.toUpperCase()!==sheetName?.toUpperCase()) fail("#NAME?");
+      pos+=2;
+    }
     const end = reference();
     const area = (Math.abs(ref.col - end.col) + 1) * (Math.abs(ref.row - end.row) + 1);
     if (area > MAX_RANGE) fail("#LIMIT!");
-    return { op: "range", start: ref, end };
+    return { op: "range", sheetName, start: ref, end };
   }
   function expression(minPrecedence, depth) {
     let node = primary(depth);
@@ -177,29 +189,79 @@ function binary(op, a, b) {
 export function makeCalculator(book) {
   const caches = book.sheets.map(() => new Map());
   const parsed = new Map();
-  return function calculate(sheetIndex, address) {
+  const states = book.sheets.map(() => new Map());
+  const errors = book.sheets.map(() => new Set());
+  const names = new Map(book.sheets.map((s,i)=>[s.name.toUpperCase(),i]));
+  function calculate(sheetIndex, address) {
     const sheet = book.sheets[sheetIndex];
     if (!sheet) return "#REF!";
-    const cache = caches[sheetIndex];
+    if (states[sheetIndex].has(address)) return sheet.cells[address]?.saved ? sheet.cells[address].v : '';
+    let current = sheetIndex, scenario = null;
+    const resolve = name => name === undefined ? current : names.get(name.toUpperCase()) ?? -1;
+    const unavailable = () => { throw new Unavailable(); };
     const visiting = new Set();
     let work = 0;
     function step() { if (++work > MAX_WORK) fail("#LIMIT!"); }
-    function read(key) {
+    function expressionValue(expression) {
+      if (!parsed.has(expression)) {
+        try { parsed.set(expression,parse(expression)); }
+        catch (error) {
+          if (book.xlsx && error instanceof FormulaError) unavailable();
+          throw error;
+        }
+      }
+      return evaluate(parsed.get(expression)) ?? 0;
+    }
+    function groupValue(group,key) {
+      const [r,c]=coords(key);
+      if (group.type === 'array') {
+        if (group.source) {
+          const {r:row,c:col,qualifier}=group.source;
+          return expressionValue(qualifier+a1(row+r-group.top,col+c-group.left));
+        }
+        if (group.top===group.bottom && group.left===group.right) return expressionValue(group.expression);
+        unavailable();
+      }
+      if (group.type!=='dataTable' || group.deleted || scenario || group.top<2 || group.left<2) unavailable();
+      if (!coordinates(group.input1) || (group.two && !coordinates(group.input2))) unavailable();
+      const header = a1(group.row || group.two ? r : group.top-1,
+                        group.row || group.two ? group.left-1 : c);
+      const formula = group.two ? a1(group.top-1,group.left-1) : header;
+      if (!book.sheets[current].cells[formula]?.f) unavailable();
+      const inputs = new Map();
+      const topValue = () => read(a1(group.top-1,c));
+      const leftValue = () => read(a1(r,group.left-1));
+      inputs.set(group.input1,group.two || group.row ? topValue() : leftValue());
+      if (group.two) inputs.set(group.input2,leftValue());
+      scenario = {sheet:current,inputs};
+      try { return read(formula); } finally { scenario=null; }
+    }
+    function read(key, index=current) {
       step();
-      if (cache.has(key)) return cache.get(key);
-      const cell = sheet.cells[key];
+      if (!book.sheets[index]) fail("#REF!");
+      if (scenario?.sheet===index && scenario.inputs.has(key)) return scenario.inputs.get(key);
+      const cache = scenario ? null : caches[index];
+      if (cache?.has(key)) return cache.get(key);
+      if (!scenario && states[index].has(key)) unavailable();
+      const cell = book.sheets[index].cells[key];
       if (!cell) return null;
-      // The editor keeps an empty styled cell in the model to preserve its format.
-      if (typeof cell.f !== "string") return cell.v === "" ? null : cell.v ?? null;
-      if (visiting.has(key)) fail("#CYCLE!");
+      if (!cell.group && typeof cell.f !== "string") {
+        if (cell.error) fail(cell.v);
+        return cell.v === "" ? null : cell.v ?? null;
+      }
+      const id=index+'!'+key+(scenario?'@':'');
+      if (visiting.has(id)) fail("#CYCLE!");
       if (visiting.size >= MAX_DEPTH) fail("#LIMIT!");
-      visiting.add(key);
+      const previous=current;
+      visiting.add(id); current=index;
       try {
-        if (!parsed.has(cell.f)) parsed.set(cell.f, parse(cell.f));
-        const value = evaluate(parsed.get(cell.f)) ?? 0;
-        cache.set(key, value);
+        const value = cell.group ? groupValue(cell.group,key) : expressionValue(cell.f);
+        cache?.set(key,value);
         return value;
-      } finally { visiting.delete(key); }
+      } catch(error) {
+        if(cell.group && error instanceof FormulaError && ['#LIMIT!','#CYCLE!'].includes(error.message)) unavailable();
+        throw error;
+      } finally { visiting.delete(id); current=previous; }
     }
     function aggregate(node) {
       let sum = 0, count = 0, min = Infinity, max = -Infinity;
@@ -217,7 +279,7 @@ export function makeCalculator(book) {
         for (let col = Math.min(start.col,end.col); col <= Math.max(start.col,end.col); col++) {
           const label = columnName(col);
           for (let row = Math.min(start.row,end.row); row <= Math.max(start.row,end.row); row++) {
-            include(read(label + row), true);
+            include(read(label + row,resolve(arg.sheetName)), true);
           }
         }
       }
@@ -232,7 +294,8 @@ export function makeCalculator(book) {
       step();
       switch (node.op) {
         case "value": return node.value;
-        case "ref": return read(node.address);
+        case "error": fail(node.value);
+        case "ref": return read(node.address,resolve(node.sheetName));
         case "sign": return numeric(evaluate(node.arg)) * (node.sign === "-" ? -1 : 1);
         case "call":
           if (node.name !== "IF") return aggregate(node);
@@ -246,9 +309,20 @@ export function makeCalculator(book) {
       if (!ref) return "#REF!";
       return read(ref.address) ?? "";
     } catch (error) {
-      if (error instanceof FormulaError) return error.message;
+      const cell=sheet.cells[address];
+      if (error instanceof Unavailable || (cell?.group && error instanceof FormulaError && ['#LIMIT!','#CYCLE!'].includes(error.message))) {
+        states[sheetIndex].set(address,cell?.saved ? 'Last saved value' : 'No saved result');
+        return cell?.saved ? cell.v : '';
+      }
+      if (error instanceof FormulaError) {errors[sheetIndex].add(address);return error.message;}
       if (error instanceof RangeError) return "#LIMIT!";
       throw error;
     }
+  }
+  calculate.isError = (index,key) => errors[index].has(key);
+  calculate.status = (index,key) => {
+    if(book.xlsx && !caches[index].has(key) && !states[index].has(key) && (book.sheets[index].cells[key]?.f || book.sheets[index].cells[key]?.group))calculate(index,key);
+    return states[index].get(key) || '';
   };
+  return calculate;
 }

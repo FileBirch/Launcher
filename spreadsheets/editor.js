@@ -1,6 +1,7 @@
 import {readFile,writeFile} from './io.js';
 import {makeCalculator,isSupported} from './calc.js';
 import {Grid} from './grid.js';
+import {renameQualifier} from './formula-groups.js';
 import {limits,blank,address,position,inputText,parseInput} from './model.js';
 
 const styleLink=document.createElement('link');
@@ -8,7 +9,7 @@ styleLink.rel='stylesheet';styleLink.href=new URL('./editor.css',import.meta.url
 const svg=d=>'<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="'+d+'"/></svg>';
 const icons={sheet:'M3 4h18v16H3zM3 9h18M3 14h18M9 9v11M15 9v11',open:'M2 19V5h8l2 3h8v3M2 19l4-8h16l-4 8z',save:'M12 3v11m-4-4 4 4 4-4M4 15v5h16v-5',undo:'M8 4 3 9l5 5M3 9h10a7 7 0 0 1 0 14',redo:'m16 4 5 5-5 5m5-5H11a7 7 0 0 0 0 14',expand:'m7 10 5 5 5-5'};
 const button=(id,title,content)=>'<button class="toolbtn" id="'+id+'" title="'+title+'" aria-label="'+title+'">'+content+'</button>';
-const help='<h3>Editing a workbook</h3><p>Choose a cell and type, double-click it, or edit the formula bar. Enter commits and moves down. Tab moves right. F2 edits the selected cell. Escape cancels the current entry.</p><p>Use the arrow keys to move and Shift + arrows or drag to select a rectangle. The name box jumps to an address. Copy transfers calculated values as tab-separated text. Paste accepts rows, columns, and formulas. Prefix an entry with an apostrophe to keep it as text.</p><h3>Calculations</h3><p>Use same-sheet A1 references, arithmetic, comparisons, SUM, AVERAGE, MIN, MAX, and IF. For example, =SUM(B2:B6) or =IF(B2&gt;0,"Yes","No"). Unsupported formulas display an error. On an explicitly confirmed export they become text.</p><h3>Files and formatting</h3><p>Open .ods, .xlsx, or UTF-8 CSV. Download .ods or .xlsx for multiple sheets, text, numbers, booleans, supported formulas, bold, italic, alignment, simple colors, and basic two-decimal number, percent, and USD currency formats. CSV contains values from the active sheet only.</p><p>Open and export use local browser memory. Your source file stays on disk. The editor lists detected features that a new copy may lose. Reopen the downloaded copy in the application where you intend to use it.</p><h3>Workbook limits</h3><p>Up to 32 sheets, 10,000 rows and 256 columns per sheet, and 100,000 stored cells per workbook. Each clipboard or formatting operation can cover 50,000 cells. Undo retains up to 50 recent actions, within a 200,000-cell history budget.</p>';
+const help='<h3>Editing a workbook</h3><p>Choose a cell and type, double-click it, or edit the formula bar. Enter commits and moves down. Tab moves right. F2 edits the selected cell. Escape cancels the current entry.</p><p>Use the arrow keys to move and Shift + arrows or drag to select a rectangle. The name box jumps to an address. Copy transfers calculated values as tab-separated text. Paste accepts rows, columns, and formulas. Prefix an entry with an apostrophe to keep it as text.</p><h3>Calculations</h3><p>Use A1 references on this sheet or another worksheet, arithmetic, comparisons, SUM, AVERAGE, MIN, MAX, and IF. For example, =SUM(B2:B6) or =IF(B2&gt;0,"Yes","No"). Imported XLSX calculation ranges appear in the compatibility notes. Saved results are labeled in the grid.</p><h3>Files and formatting</h3><p>Open .ods, .xlsx, or UTF-8 CSV. Download .ods or .xlsx for multiple sheets, text, numbers, booleans, supported formulas, bold, italic, alignment, simple colors, and basic two-decimal number, percent, and USD currency formats. CSV contains values from the active sheet only.</p><p>Open and export use local browser memory. Your source file stays on disk. The editor lists detected features that a new copy may lose. Reopen the downloaded copy in the application where you intend to use it.</p><h3>Workbook limits</h3><p>Up to 32 sheets, 10,000 rows and 256 columns per sheet, and 100,000 stored cells per workbook. Each clipboard or formatting operation can cover 50,000 cells. Undo retains up to 50 recent actions, within a 200,000-cell history budget.</p>';
 
 export function mount(host,{brand,base}){
   const app=brand.apps.spreadsheets.name;
@@ -17,7 +18,7 @@ export function mount(host,{brand,base}){
   const $=s=>host.querySelector(s), field=$('#formula'),view=$('.sheetviewport'),dlg=$('#editor-dialog');
   $('#back').href=base.href;$('#appname').textContent=app;$('#devwarning').textContent=brand.warning;
   let book=blank(),sheet=0,title='Untitled workbook',source='',calc=makeCalculator(book),history=[],future=[],rev=0,serial=0,saved=0,pending=false,busy=false,formulaRef='',formulaOriginal='',count=0;
-  let formulaNotes=[],grid;
+  let formulaNotes=[],groupNotes=[],formatNotes=[],grid;
   const downloadURLs=new Set();
   const sheetNow=()=>book.sheets[sheet],active=()=>address(grid.r,grid.c),message=s=>$('#status').textContent=s;
   const setBusy=v=>{busy=v;host.inert=v;host.setAttribute('aria-busy',String(v))};
@@ -33,16 +34,36 @@ export function mount(host,{brand,base}){
     })
   }
   function list(items){const ul=document.createElement('ul');ul.className='dialoglist';for(const s of items){const l=document.createElement('li');l.textContent=s;ul.append(l)}return ul}
-  function updateNotes(){let n=0;const examples=[];for(const s of book.sheets)for(const [ref,cell] of Object.entries(s.cells))if(cell.f!==undefined&&!isSupported(cell.f)){n++;if(examples.length<4)examples.push(s.name+'!'+ref)}
-    formulaNotes=n?[n+' unsupported formula'+(n===1?'':'s')+' ('+examples.join(', ')+(n>4?', …':'')+'). Workbook downloads convert these expressions to literal text, which can change dependent formulas. CSV exports the expressions with a safety prefix.']:[];$('#review').hidden=!book.warnings.length&&!n
+  function updateNotes(){
+    groupNotes=[];formatNotes=[];
+    for(const [i,s] of book.sheets.entries()){
+      const ranges=new Set(), unavailable=new Set();
+      for(const [ref,c] of Object.entries(s.cells)){
+        if(!c.group && !(book.xlsx && c.f))continue;
+        const label=s.name+'!'+(c.group?.ref||ref);
+        if(c.group && !ranges.has(c.group)){
+          ranges.add(c.group);
+          formatNotes.push(label+' ('+c.group.label+')');
+        }
+        if(calc.status(i,ref))unavailable.add(label+' · '+(c.group?.label||'formula')+' cannot recalculate. Cells show the last saved value or “No saved result”.');
+      }
+      groupNotes.push(...unavailable);
+    }
+    let n=0;const examples=[];for(const s of book.sheets)for(const [ref,cell] of Object.entries(s.cells))if(!book.xlsx&&cell.f!==undefined&&!isSupported(cell.f)){n++;if(examples.length<4)examples.push(s.name+'!'+ref)}
+    formulaNotes=n?[n+' unsupported formula'+(n===1?'':'s')+' ('+examples.join(', ')+(n>4?', …':'')+'). Workbook downloads convert these expressions to literal text, which can change dependent formulas. CSV exports the expressions with a safety prefix.']:[];$('#review').hidden=!book.warnings.length&&!n&&!groupNotes.length
   }
   function saveFlag(){const flag=$('#saved'),dirty=rev!==saved||pending;flag.classList.toggle('changed',dirty);flag.textContent=dirty?'Unsaved changes':source||saved!==0?'No pending changes':'Blank workbook';$('#undo').disabled=!history.length;$('#redo').disabled=!future.length}
   function selected(){
     pending=false;const ref=active(),cell=sheetNow().cells[ref],sty=cell?.style||{};
-    $('#addr').value=ref;field.value=inputText(cell);formulaRef=ref;formulaOriginal=field.value;
+    $('#addr').value=ref;field.readOnly=!!cell?.group;
+    field.value=cell?.group ? groupText(cell.group) : inputText(cell);formulaRef=ref;formulaOriginal=field.value;
     for(const k of ['bold','italic'])$('#'+k).setAttribute('aria-pressed',String(!!sty[k]));
     $('#numberformat').value=sty.fmt||'general';$('#align').value=sty.align||'';$('#color').value=sty.color||'#292735';$('#fill').value=sty.fill||'#ffffff';
-    const end=address(grid.er,grid.ec);$('#selection').textContent=sheetNow().name+' · '+ref+(ref===end?'':'–'+end);saveFlag()
+    const end=address(grid.er,grid.ec),state=calc.status(sheet,ref);$('#selection').textContent=sheetNow().name+' · '+ref+(ref===end?'':'–'+end)+(state?' · '+state:'');saveFlag()
+  }
+  function groupText(g){
+    if(g.type==='dataTable')return 'TABLE('+[g.input1,g.input2].filter(Boolean).join(', ')+') · '+g.ref;
+    return g.expression?'='+g.expression:g.label+' · '+g.ref;
   }
   function tabs(){
     const bar=$('.tablist');bar.replaceChildren();book.sheets.forEach((s,i)=>{const b=document.createElement('button');b.className='sheetbtn';b.setAttribute('role','tab');b.setAttribute('aria-selected',String(i===sheet));b.tabIndex=i===sheet?0:-1;b.textContent=s.name;
@@ -57,7 +78,29 @@ export function mount(host,{brand,base}){
       if(next){s.cells[change.ref]=next;if(!had)count++}else{delete s.cells[change.ref];if(had)count--}
     }
     else if(action.type==='add'){if(forward)book.sheets.push(action.added);else book.sheets.pop()}
-    else if(action.type==='rename')s.name=forward?action.after:action.before;
+    else if(action.type==='rename'){
+      if(!action.formulas){
+        action.formulas=[];
+        const groups=new Map();
+        for(const owner of book.sheets)for(const [ref,cell] of Object.entries(owner.cells)){
+          const f=cell.f && renameQualifier(cell.f,action.before,action.after);
+          const g=cell.group;
+          if(g && !groups.has(g)){
+            const expression=renameQualifier(g.expression,action.before,action.after);
+            const source=g.source && {...g.source,qualifier:renameQualifier(g.source.qualifier,action.before,action.after)};
+            groups.set(g,expression===g.expression?g:{...g,expression,source});
+          }
+          if(f!==cell.f || (g && groups.get(g)!==g)){
+            const after={...cell};
+            if(f!==undefined)after.f=f;
+            if(g)after.group=groups.get(g);
+            action.formulas.push({owner,ref,before:cell,after});
+          }
+        }
+      }
+      for(const entry of action.formulas)entry.owner.cells[entry.ref]=forward?entry.after:entry.before;
+      s.name=forward?action.after:action.before;
+    }
     sheet=forward&&action.type==='add'?book.sheets.length-1:action.sheet;rev=forward?action.next:action.prev;
     if(action.type!=='cells')tabs()
   }
@@ -66,19 +109,19 @@ export function mount(host,{brand,base}){
     tabs();refresh();message('')
   }
   function undo(redo){const from=redo?future:history,to=redo?history:future,a=from.pop();if(!a)return;apply(a,redo);to.push(a);tabs();refresh();message(redo?'Action redone.':'Action undone.')}
-  function changeCells(entries){
+  function changeCells(entries,styleOnly=false){
     const changes=[];let delta=0;const cells=sheetNow().cells;
-    for(const [ref,after] of entries){const before=cells[ref];if(JSON.stringify(before)===JSON.stringify(after))continue;changes.push({ref,before,after});delta+=(after?1:0)-(before?1:0)}
+    for(const [ref,after] of entries){const before=cells[ref];if(before?.group && !styleOnly){message('Protected '+before.group.label+' at '+sheetNow().name+'!'+before.group.ref+'.');return false}if(JSON.stringify(before)===JSON.stringify(after))continue;changes.push({ref,before,after});delta+=(after?1:0)-(before?1:0)}
     if(count+delta>limits.cells){message('This edit exceeds the 100,000-cell workbook limit.');return false}
     if(changes.length)record({type:'cells',changes});return true
   }
   function commit(ref,text){if(text.length>32767){message('A cell can contain up to 32,767 characters.');return}changeCells([[ref,parseInput(text,sheetNow().cells[ref]?.style)]])}
-  function rangeMap(fn){
-    try{grid.checkSize();const b=grid.bounds(),entries=[];for(let r=b.top;r<=b.bottom;r++)for(let c=b.left;c<=b.right;c++){const ref=address(r,c);entries.push([ref,fn(sheetNow().cells[ref])])}changeCells(entries)}catch(e){message(e.message)}
+  function rangeMap(fn,styleOnly=false){
+    try{grid.checkSize();const b=grid.bounds(),entries=[];for(let r=b.top;r<=b.bottom;r++)for(let c=b.left;c<=b.right;c++){const ref=address(r,c);entries.push([ref,fn(sheetNow().cells[ref])])}changeCells(entries,styleOnly)}catch(e){message(e.message)}
   }
   function format(k,v){rangeMap(cell=>{const sty={...cell?.style};if(v===undefined||v===''||v===false||v==='general')delete sty[k];else sty[k]=v;
     const baseCell={...cell,v:cell?.v??''};delete baseCell.style;if(Object.keys(sty).length)baseCell.style=sty;
-    return baseCell.v===''&&baseCell.f===undefined&&!baseCell.style?undefined:baseCell});view.focus({preventScroll:true})
+    return baseCell.v===''&&baseCell.f===undefined&&!baseCell.group&&!baseCell.style?undefined:baseCell},true);view.focus({preventScroll:true})
   }
   function paste(rows){
     const w=Math.max(0,...rows.slice(0,limits.rows+1).map(x=>x.length)),total=rows.reduce((n,r)=>n+r.length,0);
@@ -86,22 +129,25 @@ export function mount(host,{brand,base}){
     const entries=[];for(let r=0;r<rows.length;r++)for(let c=0;c<rows[r].length;c++){if(rows[r][c].length>32767){message('A pasted cell exceeds 32,767 characters.');return}const ref=address(grid.r+r,grid.c+c);entries.push([ref,parseInput(rows[r][c],sheetNow().cells[ref]?.style)])}
     if(changeCells(entries)){grid.select(grid.r+rows.length-1,grid.c+Math.max(w-1,0),true,false);message('Pasted '+total+' cell'+(total===1?'':'s')+'.')}
   }
-  grid=new Grid(view,{cell:ref=>sheetNow().cells[ref],value:ref=>calc(sheet,ref),selected,commit,history:undo,clear:()=>rangeMap(c=>parseInput('',c?.style)),message,paste,drafting:(s,dirty)=>{field.value=s;pending=dirty;saveFlag()}});
-  field.onfocus=()=>{formulaRef=active();formulaOriginal=inputText(sheetNow().cells[formulaRef])};
+  grid=new Grid(view,{cell:ref=>sheetNow().cells[ref],status:ref=>calc.status(sheet,ref),value:ref=>calc(sheet,ref),selected,commit,history:undo,clear:()=>rangeMap(c=>parseInput('',c?.style)),message,paste,drafting:(s,dirty)=>{field.value=s;pending=dirty;saveFlag()}});
+  field.onfocus=()=>{formulaRef=active();formulaOriginal=field.value};
   field.oninput=()=>{pending=field.value!==formulaOriginal;saveFlag()};
-  function settleField(){if(field.value!==formulaOriginal)commit(formulaRef,field.value);selected()}
+  function settleField(){if(!field.readOnly && field.value!==formulaOriginal)commit(formulaRef,field.value);selected()}
   field.onblur=settleField;field.onkeydown=e=>{if(e.isComposing)return;if(e.key==='Enter'||e.key==='Escape'){e.preventDefault();if(e.key==='Escape')field.value=formulaOriginal;view.focus();if(e.key==='Enter')grid.select(grid.r+(e.shiftKey?-1:1),grid.c)}};
   $('#addr').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();const pos=position(e.target.value);if(pos){grid.select(pos.r,pos.c);view.focus()}else{message('Enter a cell address between A1 and IV10000.');e.target.select()}}else if(e.key==='Escape'){selected();view.focus()}};
   $('#addr').onfocus=e=>e.target.select();$('#addr').onblur=()=>$('#addr').value=active();
   for(const k of ['bold','italic'])$('#'+k).onclick=()=>format(k,!sheetNow().cells[active()]?.style?.[k]);
   for(const [id,k] of [['numberformat','fmt'],['align','align'],['color','color'],['fill','fill']])$('#'+id).onchange=e=>format(k,e.target.value);
-  $('#resetstyle').onclick=()=>rangeMap(c=>{if(!c)return undefined;const clean={...c};delete clean.style;return clean.f===undefined&&clean.v===''?undefined:clean});
+  $('#resetstyle').onclick=()=>rangeMap(c=>{if(!c)return undefined;const clean={...c};delete clean.style;return !clean.group&&clean.f===undefined&&clean.v===''?undefined:clean},true);
   $('#undo').onclick=()=>undo(false);$('#redo').onclick=()=>undo(true);
   $('#addsheet').onclick=()=>{let n=book.sheets.length+1;const used=new Set(book.sheets.map(s=>s.name.toLowerCase()));while(used.has('sheet'+n))n++;record({type:'add',added:{name:'Sheet'+n,cells:{}}});grid.select(0,0);view.focus()};
   $('#renamesheet').onclick=async()=>{const name=await ask('Rename worksheet','Use a distinct name of up to 31 characters.','Rename',true,sheetNow().name);if(name===null||name===sheetNow().name)return;
     if(!name.trim()||/[\\/:?*\[\]\x00-\x1f]/.test(name)||/^'|'$/.test(name)||book.sheets.some((s,i)=>i!==sheet&&s.name.toLowerCase()===name.toLowerCase())){message('Choose a unique worksheet name without reserved characters.');return}record({type:'rename',before:sheetNow().name,after:name})};
   $('#help').onclick=()=>{const div=document.createElement('div');div.innerHTML=help;ask('Editor guide',div,'Close',false)};
-  $('#review').onclick=()=>ask('Workbook compatibility',list([...book.warnings,...formulaNotes]),'Close',false);
+  $('#review').onclick=()=>ask('Workbook compatibility',list(importNotes()),'Close',false);
+  function importNotes(){
+    return book.xlsx ? [...groupNotes,'XLSX export retains the original calculation records and package parts, including embedded content. Other formats have a separate export review.'] : [...book.warnings,...formulaNotes];
+  }
   function reset(newBook,name,ext){
     book=newBook;title=name;source=ext;sheet=0;history=[];future=[];serial=0;saved=0;rev=0;pending=false;calc=makeCalculator(book);count=book.sheets.reduce((n,s)=>n+Object.keys(s.cells).length,0);
     $('#booktitle').textContent=title;$('#filetype').textContent=ext?ext.toUpperCase()+' · Local working copy':'Local workbook';tabs();grid.select(0,0);updateNotes();message('')
@@ -112,7 +158,7 @@ export function mount(host,{brand,base}){
     const file=e.target.files[0];e.target.value='';if(!file||busy)return;
     // Retain the current workbook if reading or validating the replacement fails.
     try{setBusy(true);message('Reading local file…');const result=await readFile(file);setBusy(false);
-      if(!await allowReplace()){message('Open cancelled.');return}reset(result,file.name.replace(/\.[^.]+$/,'')||'Workbook',file.name.split('.').pop());message('Opened a local copy.');if(book.warnings.length||formulaNotes.length)await ask('Import notes',list([...book.warnings,...formulaNotes]),'Continue',false)
+      if(!await allowReplace()){message('Open cancelled.');return}reset(result,file.name.replace(/\.[^.]+$/,'')||'Workbook',file.name.split('.').pop());message('Opened a local copy.');if(book.warnings.length||formulaNotes.length)await ask('Import notes',list(importNotes()),'Continue',false)
     }catch(err){setBusy(false);message('File could not be opened.');await ask('Open failed',err.message,'Close',false)}
   };
   const menu=$('#formats'),exportButton=$('#export');
@@ -123,17 +169,40 @@ export function mount(host,{brand,base}){
   menu.onfocusout=e=>{if(!e.relatedTarget?.closest('.menuwrap'))closeMenu()};
   async function download(format){
     if(busy)return;closeMenu();grid.finish(true);
-    const reasons=[...book.warnings,...formulaNotes];
+    const reasons=format==='xlsx' && book.xlsx ? [] : [...book.warnings,...formulaNotes];
+    if(format!=='xlsx' && book.xlsx){
+      for(const item of formatNotes)reasons.unshift(item+' will contain displayed values only. XLSX preserves the calculation.');
+      for(const note of groupNotes)reasons.push(note);
+      if(groupNotes.length)reasons.push('This copy stores saved results as values and leaves missing results blank. XLSX retains the original formulas and cache records.');
+    }
     if(format==='csv')reasons.unshift('Only the active worksheet, “'+sheetNow().name+'”, will be included. CSV contains calculated values and drops formatting and formula definitions. Formula-like text is prefixed with an apostrophe for safe opening.');
-    if(reasons.length&&!await ask('Review export changes',list(reasons),'Download copy')){message('Download cancelled.');return}
+    if(reasons.length){
+      const details=list(reasons);
+      const alternate=format==='ods' && book.xlsx && (formatNotes.length || groupNotes.length);
+      let useXlsx=false;
+      if(alternate){
+        const choice=document.createElement('button');choice.type='button';choice.className='secondary';
+        choice.textContent='Download XLSX with formulas';
+        choice.onclick=()=>{useXlsx=true;$('#confirm').click()};
+        const body=document.createElement('div');body.append(details,choice);
+        if(!await ask('Review export changes',body,'Download ODS copy')){message('Download cancelled.');return}
+        if(useXlsx)format='xlsx';
+      }else if(!await ask('Review export changes',details,'Download copy')){message('Download cancelled.');return}
+    }
     try{
       setBusy(true);message('Preparing download…');let out=book,value=calc;
+      if(book.xlsx && format!=='xlsx'){
+        out={...book,sheets:book.sheets.map((s,i)=>({...s,cells:Object.fromEntries(Object.entries(s.cells).map(([ref,cell])=>{
+          if(!cell.group && !(cell.f && calc.status(i,ref)))return [ref,cell];
+          return [ref,{v:calc(i,ref),style:cell.style}];
+        }))}))};
+      }
       if(formulaNotes.length){out={...book,sheets:book.sheets.map(s=>({...s,cells:Object.fromEntries(Object.entries(s.cells).map(([ref,cell])=>{
         if(cell.f===undefined||isSupported(cell.f))return [ref,cell];const copy={...cell,v:'='+cell.f};delete copy.f;return [ref,copy]
       }))}))};value=format==='csv'?calc:makeCalculator(out)}
       const blob=await writeFile(out,format,sheet,value);const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;
       const filename=title+(format==='csv'?' - '+sheetNow().name:'')+' - copy.'+format;a.download=filename.replace(/[<>:"/\\|?*\x00-\x1f]/g,'_');document.body.append(a);downloadURLs.add(url);a.click();a.remove();setTimeout(()=>{URL.revokeObjectURL(url);downloadURLs.delete(url)},30000);
-      if(format!=='csv'&&!formulaNotes.length)saved=rev;
+      if(format==='xlsx' && book.xlsx || format!=='csv'&&!formulaNotes.length&&!formatNotes.length&&!groupNotes.length)saved=rev;
       message('Download requested. Check your Downloads folder.');saveFlag()
     }catch(err){setBusy(false);message('Download failed.');await ask('Export failed',err.message,'Close',false)}finally{setBusy(false)}
   }

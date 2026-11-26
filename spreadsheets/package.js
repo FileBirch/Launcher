@@ -42,6 +42,10 @@ export function openZip(buffer) {
   requireZip(pos===end);
   return {
     names:[...entries.keys()],
+    packed(name) {
+      const e=entries.get(name);
+      return {bytes:b.subarray(e.data,e.data+e.packed), method:e.method, size:e.size, crc:e.crc};
+    },
     async text(name) {
       const e=entries.get(name); if(!e) throw Error('A required workbook part is missing.');
       const compressed=b.subarray(e.data,e.data+e.packed);
@@ -60,19 +64,26 @@ export function openZip(buffer) {
     }
   };
 }
+export async function packText(text) {
+  const raw=encoder.encode(text);
+  const stream=new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  return {bytes:new Uint8Array(await new Response(stream).arrayBuffer()), size:raw.length, crc:checksum(raw), method:8};
+}
 export function makeZip(parts, type) {
   const local=[], central=[];let position=0, centralSize=0;
   for(const [name,content] of parts){
-    const filename=encoder.encode(name), bytes=encoder.encode(content), crc=checksum(bytes);
+    const filename=encoder.encode(name), bytes=content.bytes ?? encoder.encode(content);
+    const crc=content.crc ?? checksum(bytes), size=content.size ?? bytes.length, method=content.method ?? 0;
     const a=new Uint8Array(30+filename.length), c=new Uint8Array(46+filename.length);
     for(const [rec,isCentral] of [[a,false],[c,true]]){
       const v=new DataView(rec.buffer), off=isCentral?2:0;
       v.setUint32(0,isCentral?0x02014b50:0x04034b50,true);
       if(isCentral)v.setUint16(4,20,true);
       v.setUint16(4+off,20,true);v.setUint16(6+off,2048,true);
+      v.setUint16(8+off,method,true);
       v.setUint16(12+off,33,true); // DOS date 1980-01-01
       v.setUint32(14+off,crc,true);v.setUint32(18+off,bytes.length,true);
-      v.setUint32(22+off,bytes.length,true);v.setUint16(26+off,filename.length,true);
+      v.setUint32(22+off,size,true);v.setUint16(26+off,filename.length,true);
       rec.set(filename,isCentral?46:30);
     }
     new DataView(c.buffer).setUint32(42,position,true);local.push(a,bytes);central.push(c);
