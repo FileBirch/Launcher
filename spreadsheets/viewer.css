@@ -1,0 +1,19 @@
+.tables-viewer { padding: 1rem; min-width: 0; width: 100%; box-sizing: border-box; }
+.tables-viewer h2, .tables-viewer h3 { margin: .5rem 0; overflow-wrap: anywhere; }
+.tables-viewer form, .tables-viewer details { margin-block: .5rem; }
+.tables-viewer button, .tables-viewer input, .tables-viewer select { font: inherit; }
+.tables-page { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; margin-top: .5rem; }
+.tables-page p { flex-basis: 100%; margin: .25rem 0; }
+.tables-page input { width: 5.5rem; }
+.tables-scroll { overflow: auto; max-height: 68vh; border: 1px solid #a2b4b4; }
+.tables-scroll table { border-collapse: separate; border-spacing: 0; min-width: max-content; }
+.tables-scroll th, .tables-scroll td { border-right: 1px solid #c4d0d0; border-bottom: 1px solid #c4d0d0; padding: .35rem .45rem; text-align: left; vertical-align: top; }
+.tables-scroll th { position: sticky; background: #edf4f2; color: #162d2f; }
+.tables-scroll th[scope=col] { top: 0; z-index: 2; }
+.tables-scroll th[scope=row] { left: 0; }
+.tables-scroll td { background: #fff; color: #183235; min-width: 6rem; max-width: 20rem; overflow-wrap: anywhere; white-space: pre-wrap; }
+.tables-scroll td button { text-align: inherit; width: 100%; padding: .1rem .2rem; background: transparent; border: 0; color: inherit; font: inherit; cursor: pointer; }
+.tables-scroll td button:hover { text-decoration: underline; }
+.tables-scroll td button:focus-visible, .tables-scroll:focus-visible { outline: 2px solid #055d5f; outline-offset: 1px; }
+.tables-formula, .tables-continuation { color: #425657; background: #e3efed; border-radius: .25rem; padding-inline: .2rem; }
+.tables-viewer [data-cell-info] pre { white-space: pre-wrap; overflow-wrap: anywhere; }

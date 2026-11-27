@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const {createServer} = require('node:http');
-const {chromium} = require('playwright');
+const {chromium} = require(process.env.FILEBIRCH_PLAYWRIGHT || 'playwright');
 const root=path.resolve(__dirname,'..'), fixture=path.join(__dirname,'formula-groups.xlsx');
 
 async function run(){
@@ -24,10 +24,18 @@ async function run(){
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   let browser;
   try {
-    browser=await chromium.launch({channel:process.env.FILEBIRCH_BROWSER||'msedge',headless:true});
+    browser=await chromium.launch({...(process.env.FILEBIRCH_BROWSER_EXE?{executablePath:process.env.FILEBIRCH_BROWSER_EXE}:{channel:process.env.FILEBIRCH_BROWSER||'msedge'}),headless:true});
     const page=await browser.newPage({viewport:{width:1320,height:850}});
     page.setDefaultTimeout(6000);
     const errors=[];page.on('pageerror',err=>errors.push(err.message));
+    // The shipped route is read-only. Exercise the retained editor in this
+    // test context only; no public editor route or switch is exposed.
+    await page.route('**/shell.js',async route=>{
+      const source=(await fs.readFile(path.join(root,'shell.js'),'utf8'))
+        .replace('spreadsheets/viewer.js','spreadsheets/editor.js')
+        .replace('spreadsheets/viewer.css','spreadsheets/editor.css');
+      await route.fulfill({contentType:'text/javascript',body:source});
+    });
     await page.goto('http://127.0.0.1:'+server.address().port+'/spreadsheets/');
     await page.getByRole('button',{name:'I agree to the Terms of Service'}).click();
     const button=id=>page.locator('#'+id);

@@ -1,4 +1,5 @@
 import {XML, MS, REL, PKG, MIME, parse, xml, children, first, all, attr, address, coords, rowsOf, stylesOf, isSheetNameExcel, errorValue, bookReader} from './xml.js';
+import {initPreview,finishPreview,addMerge,excelDateFormat} from './preview-metadata.js';
 import {makeZip} from './package.js';
 import {translateShared,formulaGroup,installGroups} from './formula-groups.js';
 import {patchXlsx} from './xlsx-writeback.js';
@@ -30,7 +31,7 @@ function richText(n,warn){
   if(children(n).some(c=>c.localName!=='t'))warn('Rich text, phonetic annotations or inline markup become plain text.');
   return children(n).map(c=>c.localName==='t'?stringValue(c):c.localName==='r'?stringValue(first(c,'t')):'').join('');
 }
-function readStyles(root,warn){
+function readStyles(root,warn,viewOnly){
   const fonts=children(first(root,'fonts'),'font'), fills=children(first(root,'fills'),'fill'),nums=new Map(children(first(root,'numFmts'),'numFmt').map(n=>[attr(n,'numFmtId'),attr(n,'formatCode')]));
   const codes={'0.00':'number','0.00%':'percent','$#,##0.00':'currency','"$"#,##0.00':'currency'};
   function color(n){
@@ -50,11 +51,13 @@ function readStyles(root,warn){
     if(a){const horizontal=attr(a,'horizontal');if(['left','center','right'].includes(horizontal))s.align=horizontal;
       if(Array.from(a.attributes).some(v=>v.localName!=='horizontal')||(horizontal&&!s.align))warn(STYLELOSS)}
     const fmt=attr(x,'numFmtId')||'0', known=({'2':'number','10':'percent'})[fmt]||codes[nums.get(fmt)];
-    if(known)s.fmt=known;else if(fmt!=='0')warn(STYLELOSS);
+    const dateType=viewOnly&&excelDateFormat(Number(fmt),nums.get(fmt));
+    if(dateType)s.dateType=dateType;
+    else if(known)s.fmt=known;else if(fmt!=='0')warn(STYLELOSS);
     return s;
   });
 }
-export async function readXlsx(zip){
+export async function readXlsx(zip,{viewOnly=false}={}){
   const ctx=bookReader(),{warn}=ctx;
   const rels=new Map();
   const read=async name=>parse(await zip.text(name));
@@ -93,9 +96,10 @@ export async function readXlsx(zip){
   for(const type of ['styles','sharedStrings']){
     const rel=lookup(type);if(!rel)continue;
     const name=partName(wbName,rel.target);known.add(name);const root=await read(name);
-    if(type==='styles')styles=readStyles(root,warn);
+    if(type==='styles')styles=readStyles(root,warn,viewOnly);
     else strings=children(root,'si').map(n=>richText(n,warn));
   }
+  const date1904=['1','true'].includes(attr(first(doc,'workbookPr'),'date1904'));
   if(all(doc,'definedName').length)warn('Defined names, including print ranges and named formulas, are omitted.');
   if(first(doc,'workbookProtection'))warn('Workbook protection is omitted.');
   if(first(doc,'externalReferences'))warn('External workbook references are omitted.');
@@ -104,12 +108,20 @@ export async function readXlsx(zip){
     if(!rel||rel.external)throw Error('Invalid or external worksheet relationship.');
     if(rel.type!=='worksheet'){warn('Chart sheets and other non-worksheet sheets are omitted.');continue}
     const sheet=ctx.addSheet(name),file=partName(wbName,rel.target);known.add(file);
-    if(attr(node,'state')&&attr(node,'state')!=='visible')warn('Hidden sheets and rows or columns become visible.');
+    const hidden=!!attr(node,'state')&&attr(node,'state')!=='visible';
+    if(viewOnly){initPreview(sheet,hidden);sheet.preview.date1904=date1904;}
+    else if(hidden)warn('Hidden sheets and rows or columns become visible.');
     const ws=await read(file);
     if(ws.localName!=='worksheet')throw Error('Invalid worksheet XML.');
     const labels={mergeCells:'Merged cells are unmerged.',drawing:'Drawings, charts and images are omitted.',legacyDrawing:'Legacy drawings and comments are omitted.',hyperlinks:'Hyperlink targets are omitted.',conditionalFormatting:'Conditional formatting is omitted.',dataValidations:'Data validation is omitted.',tableParts:'Structured tables are omitted.',autoFilter:'Filters are omitted.',sheetProtection:'Sheet protection is omitted.',cols:'Custom column widths, visibility and column styles are omitted.',extLst:'Worksheet extension data is omitted.'};
     for(const k of children(ws)){
+      if(viewOnly&&k.localName==='mergeCells')continue;
       if(labels[k.localName])warn(labels[k.localName]);else if(!['dimension','sheetViews','sheetFormatPr','sheetData','pageMargins','sheetPr','printOptions','pageSetup','headerFooter'].includes(k.localName))warn('Other worksheet features ('+k.localName+') are omitted.');
+    }
+    if(viewOnly)for(const node of children(first(ws,'mergeCells'),'mergeCell')){
+      const parts=attr(node,'ref').split(':');
+      if(parts.length!==2)throw Error('Invalid merged cell range.');
+      addMerge(sheet,...parts);
     }
     if(all(ws,'pane').length)warn('Frozen and split panes are omitted.');
     const groups=[], masters=new Map(), shared=[];
@@ -117,6 +129,7 @@ export async function readXlsx(zip){
     for(const row of children(first(ws,'sheetData'),'row')){
       inspectChildren(row,['c'],warn,'Additional row extension data is omitted.');
       rowIndex=Number(attr(row,'r')||rowIndex+1);let col=0;
+      if(!Number.isSafeInteger(rowIndex)||rowIndex<1)throw Error('Invalid XLSX row index.');
       if(['s','ht','hidden','customFormat','outlineLevel','collapsed'].some(a=>row.hasAttribute(a)))warn('Row formatting, height, visibility and outlines are omitted.');
       for(const c of children(row,'c')){
         inspectChildren(c,['f','v','is'],warn,'Additional cell metadata or extension data is omitted.');
@@ -133,6 +146,7 @@ export async function readXlsx(zip){
             if(f.textContent)masters.set(si,{addr,expression:f.textContent});
             cell.shared=si;
           }else if(kind==='array'||kind==='dataTable')groups.push(formulaGroup(f,addr));
+          else if(kind!=='normal'&&viewOnly){cell.unsupportedFormula=kind;warn('Unrecognized formulas are shown as saved values only.');}
           else if(kind!=='normal')throw Error('Unknown formula type '+kind+' at '+name+'!'+addr+'.');
           else if(!f.textContent)throw Error('Missing formula at '+name+'!'+addr+'.');
           if(f.textContent)cell.f=f.textContent;
@@ -147,7 +161,8 @@ export async function readXlsx(zip){
         else if(type==='str')cell.v=stringValue(v);
         else if(type==='e'){cell.v=v?.textContent||'';cell.error=true}
         else if(type==='n'&&cell.saved){cell.v=Number(v.textContent);if(!Number.isFinite(cell.v))throw Error('Invalid numeric value in workbook.')}
-        else if(type!=='n'){cell.v=v?.textContent||'';warn('Error, date or unrecognized cell types are imported as text.')}
+        else if(type==='d'&&viewOnly){cell.v=v?.textContent||'';cell.dateLiteral=true;}
+        else if(type!=='n'){cell.v=v?.textContent||'';if(viewOnly){cell.unsupportedType=type;warn('Unrecognized cell types are shown as saved text only.');}else warn('Error, date or unrecognized cell types are imported as text.');}
         if(style&&Object.keys(style).length)cell.style={...style};
         if(attr(c,'s')&&!style)warn(STYLELOSS);
         if(cell.v!==''||f||cell.style||cell.saved)ctx.put(sheet,addr,cell);
@@ -159,6 +174,7 @@ export async function readXlsx(zip){
       else groups.push({...formulaGroup(null,addr),type:'shared',label:'shared formula without master'});
     }
     installGroups(ctx,sheet,groups);
+    if(viewOnly)finishPreview(sheet);
     if(groups.length || shared.length)special=true;
     originals.push({file,id,name});
   }
@@ -172,8 +188,9 @@ export async function readXlsx(zip){
     else if(/\/tables\//i.test(file))warn('Structured tables are omitted.');
     else if(!/^(docProps\/|xl\/theme\/|xl\/calcChain\.xml$)/.test(file))warn('Additional package parts or custom data are omitted.');
   }
-  warn(GLOSS);
+  if(!viewOnly)warn(GLOSS);
   const book=ctx.result();
+  if(viewOnly)return book;
   if(special){
     book.xlsx={zip,wbName,relsName:dir+'_rels/'+wbName.slice(dir.length)+'.rels',
       styleFile:lookup('styles') ? partName(wbName,lookup('styles').target) : null, originals};

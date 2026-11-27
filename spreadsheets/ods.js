@@ -1,4 +1,5 @@
 import {XML,MIME,limits,xml,parse,children,first,all,bookReader,checkBounds,address,rowsOf,stylesOf,errorValue} from './xml.js';
+import {initPreview,finishPreview,addMerge} from './preview-metadata.js';
 import {makeZip} from './package.js';
 const ns={};for(const [prefix,name] of Object.entries({office:'office',table:'table',style:'style',text:'text',number:'datastyle',fo:'xsl-fo-compatible',manifest:'manifest'}))ns[prefix]='urn:oasis:names:tc:opendocument:xmlns:'+name+':1.0';
 ns.of='urn:oasis:names:tc:opendocument:xmlns:of:1.2';
@@ -71,7 +72,7 @@ function collectStyles(docs,warn){
   }
   return get
 }
-export async function readOds(zip){
+export async function readOds(zip,{viewOnly=false}={}){
   const ctx=bookReader(),{warn}=ctx;
   const root=parse(await zip.text('content.xml'));
   const body=first(first(root,'body'),'spreadsheet');if(!body||body.namespaceURI!==ns.office)throw Error('The package is not an OpenDocument spreadsheet.');
@@ -107,6 +108,7 @@ export async function readOds(zip){
     'data-pilot-source-cell-range':'Pivot tables are omitted.'
   };
   for(const e of root.getElementsByTagNameNS('*','*')){
+    if(viewOnly&&e.localName==='covered-table-cell')continue;
     if(omissions[e.localName])warn(omissions[e.localName]);
     if(e.hasAttributeNS('http://www.w3.org/1999/xlink','href'))warn('Linked content and hyperlink targets are omitted.');
   }
@@ -118,8 +120,12 @@ export async function readOds(zip){
   const tables=children(body,'table');
   for(const t of tables){
     const sheet=ctx.addSheet(a(t,'table','name'));
+    if(viewOnly){const tableStyle=a(t,'table','style-name');
+      const hidden=a(t,'table','display')==='false'||!!tableStyle&&docs.some(doc=>all(doc,'style').some(style=>styleName(style)===tableStyle&&a(first(style,'table-properties'),'table','display')==='false'));
+      initPreview(sheet,hidden);
+    }
     if(a(t,'table','protected')==='true')warn('Sheet protection is omitted.');
-    if(a(t,'table','display')==='false')warn('Hidden sheets become visible.');
+    if(!viewOnly&&a(t,'table','display')==='false')warn('Hidden sheets become visible.');
     let row=1;
     // The physical row/column structure can include enormous repeated empty tails.
     const visitRows=node=>{
@@ -129,30 +135,50 @@ export async function readOds(zip){
           if(!['table-column','table-column-group','table-columns','table-header-columns'].includes(el.localName))warn('Additional sheet structures, objects or extension data are omitted.');
           continue;
         }
-        if(a(el,'table','visibility')&&a(el,'table','visibility')!=='visible')warn('Hidden rows become visible.');
+        if(a(el,'table','visibility')&&a(el,'table','visibility')!=='visible')warn('Hidden rows are shown in this grid.');
         const nr=repeated(el,'number-rows-repeated');let col=1;
         for(const c of children(el)){
           if(!['table-cell','covered-table-cell'].includes(c.localName)){warn('Additional row data or extension records are omitted.');continue}
           if(children(c).some(n=>n.localName!=='p')||Array.from(c.attributes).some(v=>v.namespaceURI===ns.table&&!['formula','style-name','number-columns-repeated'].includes(v.localName)))warn('Additional cell markup, attributes or embedded content are omitted.');
           const nc=repeated(c,'number-columns-repeated'), f=a(c,'table','formula'),type=a(c,'office','value-type');
-          if(a(c,'table','number-matrix-columns-spanned')||a(c,'table','number-matrix-rows-spanned'))throw Error('Matrix formulas are unsupported. The original ODS is unchanged.');
-          if(a(c,'table','number-columns-spanned')||a(c,'table','number-rows-spanned'))warn('Merged cells are unmerged.');
-          if(f&&(nr>1||nc>1))throw Error('Repeated formula cells require per-cell translation and are unsupported.');
-          let v='';
-          if(f)v=''; // Recalculate in the editor. Never import a cached formula result as data.
+          const matrix=a(c,'table','number-matrix-columns-spanned')||a(c,'table','number-matrix-rows-spanned');
+          if(matrix&&!viewOnly)throw Error('Matrix formulas are unsupported. The original ODS is unchanged.');
+          if(matrix)warn('Matrix formulas are not evaluated. Only saved cell values are shown.');
+          if(viewOnly&&c.localName==='covered-table-cell'){col+=nc;continue;}
+          if(viewOnly){
+            const mr=repeated(c,'number-rows-spanned'),mc=repeated(c,'number-columns-spanned');
+            if(mr>1||mc>1){
+              checkBounds(row+nr+mr-2,col+nc+mc-2);
+              if(nr*nc>10000)throw Error('Repeated merges exceed the supported limit.');
+              for(let dr=0;dr<nr;dr++)for(let dc=0;dc<nc;dc++)addMerge(sheet,address(row+dr,col+dc),address(row+dr+mr-1,col+dc+mc-1));
+            }
+          }
+          if(!viewOnly&&(a(c,'table','number-columns-spanned')||a(c,'table','number-rows-spanned')))warn('Merged cells are unmerged.');
+          if(!viewOnly&&f&&(nr>1||nc>1))throw Error('Repeated formula cells require per-cell translation and are unsupported.');
+          let v='',saved=false;
+          if(viewOnly&&f&&(nr>1||nc>1))warn('Repeated formulas are not translated; any saved value is shown.');
+          if(f&&!viewOnly)v=''; // Recalculate in the editor. Never import a cached formula result as data.
           else if(['float','percentage','currency'].includes(type)){
-            const val=a(c,'office','value');v=Number(val);if(!val||!Number.isFinite(v))throw Error('Invalid numeric value in ODS.');
-          }else if(type==='boolean'){const val=a(c,'office','boolean-value');if(!['true','false','1','0'].includes(val))throw Error('Invalid Boolean value in ODS.');v=['1','true'].includes(val)}
+            const val=a(c,'office','value');v=Number(val);saved=!!val;
+            if((!val||!Number.isFinite(v))&&!(viewOnly&&f&&!val))throw Error('Invalid numeric value in ODS.');
+          }else if(type==='boolean'){const val=a(c,'office','boolean-value');if(!['true','false','1','0'].includes(val)&&!(viewOnly&&f&&!val))throw Error('Invalid Boolean value in ODS.');saved=!!val;v=['1','true'].includes(val)}
           else {
             const paras=children(c,'p');v=a(c,'office','string-value')||paras.map(p=>paragraph(p,warn)).join('\n');
-            if(type&&!['string','void'].includes(type)){warn('Date, time or other unsupported cell types become text.');v=v||a(c,'office','date-value')||a(c,'office','time-value')}
+            saved=type==='string'&&(paras.length>0||c.hasAttributeNS(ns.office,'string-value'));
+            if(viewOnly&&['date','time'].includes(type)){v=a(c,'office',type+'-value');saved=!!v;}
+            else if(type&&!['string','void'].includes(type)){warn('Some cell types are shown as text.');v=v||a(c,'office','date-value')||a(c,'office','time-value');saved=!!v;}
+            else if(viewOnly&&f&&!type&&paras.length)saved=true;
           }
           const style=getStyle(a(c,'table','style-name')),specific=Object.entries(style).some(([key,val])=>!(key==='color'&&val==='#000000')&&val);
           if(f||type||v!==''||specific){
             checkBounds(row+nr-1,col+nc-1);
             if(nr*nc>limits.cells)throw Error('Repeated cells exceed the workbook limit.');
             for(let dr=0;dr<nr;dr++)for(let dc=0;dc<nc;dc++){
-              const cell={v};if(f)cell.f=formulaIn(f);if(Object.keys(style).length)cell.style={...style};ctx.put(sheet,address(row+dr,col+dc),cell)
+              const cell={v:viewOnly&&f&&!saved?'':v};
+              if(f)cell.f=viewOnly?f:formulaIn(f);
+              if(viewOnly){if(f)cell.saved=saved;if(matrix)cell.unsupportedFormula='matrix';if(type==='date'||type==='time')cell.dateLiteral=true;}
+              if(Object.keys(style).length)cell.style={...style};
+              ctx.put(sheet,address(row+dr,col+dc),cell)
             }
           }
           col+=nc;
@@ -161,8 +187,9 @@ export async function readOds(zip){
       }
     };
     visitRows(t);
+    if(viewOnly)finishPreview(sheet);
   }
-  warn('Document metadata, view settings, print layouts, row and column styles are rebuilt. Only documented cell formats are preserved.');
+  if(!viewOnly)warn('Document metadata, view settings, print layouts, row and column styles are rebuilt. Only documented cell formats are preserved.');
   return ctx.result();
 }
 function numberStyles(){

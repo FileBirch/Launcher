@@ -38,29 +38,37 @@ function gate(){
 }
 function launcher(){
   const cards=Object.entries(brand.apps).map(([k,a])=>'<article class="appcard"><div class="cardtop"><span class="appicon '+k+'">'+icon(k)+'</span><span class="pill '+(a.available?'avail':'')+'">'+(a.available?'Available':'Planned')+'</span></div><h3>'+esc(a.name)+'</h3><p>'+esc(a.subtitle)+'</p><span class="format">'+esc(a.formats)+'</span>'+(a.available?'<a class="appopen" href="'+routeURL(k+'/')+'">Open '+esc(a.name)+'</a>':'')+'</article>').join('');
-  frame('<section class="launchhero"><div><div class="eyebrow">Suite launcher</div><h1>'+esc(brand.fullName)+'</h1><p class="lead">Choose an app to work with files on your device.</p></div>'+art()+'</section><section><div class="sectionhead"><h2>Applications</h2><span class="session">Local session</span></div><div class="apps">'+cards+'</div></section>'+devNotice());
+  frame('<section class="launchhero"><div><div class="eyebrow">Suite launcher</div><h1>'+esc(brand.fullName)+'</h1><p class="lead">Choose an app to view files on this device. This preview does not edit or upload files.</p></div>'+art()+'</section><section><div class="sectionhead"><h2>Applications</h2><span class="session">Local session</span></div><div class="apps">'+cards+'</div></section>'+devNotice());
+}
+const viewerRoutes = {
+  spreadsheets: {load: () => import('./spreadsheets/viewer.js'), stylesheet: 'spreadsheets/viewer.css', entry: 'mount'},
+  documents: {load: () => import('./documents/viewer.js'), stylesheet: 'documents/viewer.css', entry: 'mount'},
+  presentations: {load: () => import('./presentations/viewer.js'), stylesheet: 'presentations/viewer.css', entry: 'mountViewer'}
+};
+function loadViewerStyles(path) {
+  const href = new URL(path, base).href;
+  const existing = [...document.querySelectorAll('link[rel=stylesheet]')].find(link => link.href === href);
+  const link = existing || Object.assign(document.createElement('link'), {rel: 'stylesheet', href});
+  if (link.sheet) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    link.addEventListener('load', resolve, {once:true});
+    link.addEventListener('error', () => reject(Error('Viewer styling could not load.')), {once:true});
+    if (!existing) document.head.append(link);
+  });
 }
 async function enter(){
   if(!accepted){gate();return}
   if(!route){launcher();return}
-  if(route==='spreadsheets'){
-    frame('<div id="editor"><p class="fail" role="status">Preparing the spreadsheet workspace…</p></div>');
-    try {
-      const editor = await import('./spreadsheets/editor.js');
-      // The virtual grid measures its viewport during mount.
-      const cssURL = new URL('spreadsheets/editor.css', base).href;
-      const css = Array.from(document.querySelectorAll('link[rel=stylesheet]')).find(link => link.href === cssURL);
-      if (css && !css.sheet) {
-        await new Promise((resolve, reject) => {
-          css.addEventListener('load', resolve, {once:true});
-          css.addEventListener('error', () => reject(Error('The editor stylesheet could not load.')), {once:true});
-        });
-      }
-      await editor.mount(root.querySelector('#editor'), {brand, base:routeURL()});
-    } catch (error) {
-      root.querySelector('#editor').textContent = 'The editor could not start. ' + error.message;
-    }
-  }else{frame('<div class="intro"><div class="eyebrow">Planned application</div><h1>'+esc(brand.apps[route].name)+'</h1><p class="lead">This app is planned for a future release.</p><p><a href="'+routeURL().href+'">Return to the launcher</a></p></div>'+devNotice())}
+  const config=viewerRoutes[route];
+  if(!config){launcher();return}
+  frame('<div class="intro"><div class="eyebrow">Read-only local viewer</div><h1>'+esc(brand.apps[route].name)+'</h1><p class="lead">Open and view a file from this device. Your original file is never modified.</p></div><div id="viewer"><p class="fail" role="status">Preparing the viewer…</p></div>'+devNotice());
+  const container=root.querySelector('#viewer');
+  try {
+    const [viewer]=await Promise.all([config.load(),loadViewerStyles(config.stylesheet)]);
+    await viewer[config.entry](container,{brand,base:routeURL()});
+  } catch (error) {
+    container.textContent='The viewer could not start. '+error.message;
+  }
 }
 async function start(){
   const res=await fetch(new URL('tos.md',base),{cache:'no-store'});if(!res.ok)throw Error('The local agreement could not be loaded.');

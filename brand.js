@@ -9,8 +9,8 @@ export const brand = {
     return this.apps[route] ? this.suite + ' ' + this.apps[route].name : this.fullName;
   },
   descriptor: 'Local productivity suite',
-  version: '0.1',
-  get description() { return this.fullName + '. A browser-based suite for working with local files.'; },
+  version: '0.2 viewer preview',
+  get description() { return this.fullName + '. Read-only viewers for local office files.'; },
   feedback: 'NaiomiSummersDevelopment@gmail.com',
   stage: 'Early Development',
   warning: 'Errors or missing features are possible in this early release.',
@@ -27,8 +27,8 @@ export const brand = {
     cream: '#faf8f3', line: '#d8d4ce', copper: '#ab7354'
   },
   apps: {
-    spreadsheets: { name: 'Tables', subtitle: 'Spreadsheet editor', formats: '.ods · .xlsx · .csv', available: true },
-    documents: { name: 'Papers', subtitle: 'Document editor', formats: '.docx', available: false },
-    presentations: { name: 'Present', subtitle: 'Presentation editor', formats: '.pptx', available: false }
+    spreadsheets: { name: 'Tables', subtitle: 'Read-only spreadsheet viewer', formats: '.ods · .xlsx · .csv', available: true },
+    documents: { name: 'Papers', subtitle: 'Read-only document viewer', formats: '.docx · .odt · .txt', available: true },
+    presentations: { name: 'Present', subtitle: 'Read-only presentation viewer', formats: '.pptx · .odp', available: true }
   }
 };

@@ -1,0 +1,31 @@
+.papers-intro {padding:1.6rem 0 .8rem}
+.papers-intro h1 {margin:0 0 .35rem;line-height:1.2}
+.papers-intro p {margin:.45rem 0}
+.papers-toolbar {display:flex;flex-wrap:wrap;gap:.6rem 1rem;align-items:center;margin:1rem 0}
+.papers-toolbar label {font-weight:650}
+.papers-toolbar input {max-width:100%;font:inherit}
+.papers-toolbar button {font:inherit;padding:.35rem .7rem;color:inherit;background:var(--cream);border:1px solid var(--line);border-radius:.35rem}
+.papers-toolbar a {color:var(--plum)}
+.papers-details {font-size:.92rem}
+.papers-status {overflow-wrap:anywhere}
+.papers-error {color:#9c1724}
+.papers-warnings {font-size:.93rem}
+.papers-view {padding:clamp(.45rem,2vw,1.5rem);margin:0 0 1.5rem;background:#eae6e1;border:1px solid var(--line);border-radius:.55rem}
+.papers-page {box-sizing:border-box;max-width:900px;min-width:0;min-height:24rem;margin:auto;padding:clamp(1rem,4.5vw,3.2rem);background:#fff;color:#1d1c20;font:1rem/1.5 Georgia,serif;overflow-wrap:anywhere}
+.papers-page p,.papers-page h1,.papers-page h2,.papers-page h3,.papers-page h4,.papers-page h5,.papers-page h6 {white-space:pre-wrap;font-family:inherit;margin:.55em 0;min-height:1.1em;tab-size:4}
+.papers-page p {font-size:inherit}
+.papers-page h1 {font-size:2em}
+.papers-page h2 {font-size:1.55em}
+.papers-page h3 {font-size:1.28em}
+.papers-page h4,.papers-page h5,.papers-page h6 {font-size:1.12em}
+.papers-page pre {white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:.92em}
+.papers-page img {display:inline-block;max-width:100%;height:auto;vertical-align:middle}
+.papers-page ol,.papers-page ul {padding-inline-start:1.65em}
+.papers-page li p {margin:.25em 0}
+.papers-table {max-width:100%;overflow-x:auto;margin:.9em 0}
+.papers-table table {min-width:45%;border-collapse:collapse}
+.papers-table th,.papers-table td {padding:.3em .55em;border:1px solid #9c979d;text-align:start;vertical-align:top}
+.papers-table th {background:#f3f1f4}
+.papers-break {display:block;white-space:normal;text-align:center;border-top:1px dashed #a7a0aa;color:#625966;font:normal .76rem/1.5 system-ui,sans-serif;margin:1rem 0;padding-top:.2rem}
+.papers-linktext {text-decoration:underline;color:#46365c}
+.papers-omitted {font:normal .8em/1.3 system-ui,sans-serif;color:#615969;background:#f2edf3;padding:.1em .35em;border-radius:.2em}
